@@ -1,0 +1,18 @@
+name = "tradninja-pro-api"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[ai]
+binding = "AI"
+
+[vars]
+SERVICE_NAME = "TradNinja Pro API"
+ENVIRONMENT = "production"
+GITHUB_REPO = "clepta2/tradninja-pro"
+DOCS_URL = "https://github.com/clepta2/tradninja-pro"
+API_VERSION = "1.0.0"
+MODEL_NAME = "@cf/meta/m2m100-1.2b"
