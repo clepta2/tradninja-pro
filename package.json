@@ -1,0 +1,32 @@
+{
+  "name": "tradninja-pro",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "SDK e API Oficial TradNinja Pro — Tradução Neural Anycast, Bearer RFC 6750, i18n W3C na Borda (<35ms).",
+  "main": "tradninja-pro.js",
+  "module": "tradninja-pro.js",
+  "types": "types/index.d.ts",
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "tradninja",
+    "translation",
+    "i18n",
+    "w3c",
+    "cloudflare-worker",
+    "edge-computing",
+    "sdk",
+    "neural-translation"
+  ],
+  "author": "clepta2 <clepta2@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clepta2/tradninja-pro.git"
+  },
+  "bugs": {
+    "url": "https://github.com/clepta2/tradninja-pro/issues"
+  },
+  "homepage": "https://github.com/clepta2/tradninja-pro#readme"
+}
