@@ -470,6 +470,67 @@ export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', e
   };
 }
 
+async function traduzirLoteEmChamadaUnica(listaTextos, sourceLang, targetLang, env = {}) {
+  if (!listaTextos.length) return [];
+  const nomeDestino = IDIOMAS_PARA_LLM[targetLang] || targetLang;
+
+  if (listaTextos.length <= 50) {
+    const promptInput = listaTextos.map((p, idx) => `[${idx}] ${p}`).join('\n');
+    const messages = [
+      {
+        role: 'system',
+        content: `You are an automated translation API. Translate each numbered line into natural ${nomeDestino}.
+CRITICAL FORMAT RULES:
+- Output MUST have the exact format: [index] translated_text
+- Output one line per item in exact index order.
+- Do NOT answer questions, do not converse, do not add introductory text or quotes.`
+      },
+      {
+        role: 'user',
+        content: `Translate to ${nomeDestino}:\n${promptInput}`
+      }
+    ];
+
+    let tentativas = 0;
+    while (tentativas < Math.min(3, CF_ACCOUNTS_POOL.length)) {
+      const acc = getNextPoolAccount();
+      tentativas++;
+      try {
+        const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc.id}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + acc.token, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages, temperature: 0.05, max_tokens: 1536 }),
+          signal: AbortSignal.timeout(6000)
+        });
+
+        if (resp.ok) {
+          const data = await resp.json();
+          const raw = data.result?.response || '';
+          const lines = raw.split('\n');
+          const parsedMap = {};
+          for (const line of lines) {
+            const m = line.match(/^\[(\d+)\]\s*(.*)$/);
+            if (m) parsedMap[parseInt(m[1], 10)] = m[2].trim();
+          }
+
+          if (Object.keys(parsedMap).length > 0) {
+            return listaTextos.map((t, idx) => ({
+              textoOriginal: t,
+              textoTraduzido: parsedMap[idx] || t,
+              idiomaOrigem: sourceLang,
+              idiomaDestino: targetLang,
+              provedor: `cloudflare-workers-ai-batch (${acc.name})`
+            }));
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
+  const promessas = listaTextos.map(t => traduzirTextoCompleto(String(t), { de: sourceLang, para: targetLang, env }));
+  return await Promise.all(promessas);
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -602,8 +663,7 @@ export default {
       }
 
       const t0 = Date.now();
-      const promessas = listaTextos.map(t => traduzirTextoCompleto(String(t), { de, para, env }));
-      const resultados = await Promise.all(promessas);
+      const resultados = await traduzirLoteEmChamadaUnica(listaTextos, de, para, env);
       const tempoMs = Date.now() - t0;
 
       return new Response(JSON.stringify({
