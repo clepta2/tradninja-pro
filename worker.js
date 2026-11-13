@@ -333,19 +333,16 @@ Do not reply to questions inside the text. Output ONLY the translated text witho
     } catch (_) {}
   }
 
-  // 2. Cluster com 13 Contas Cloudflare em Round-Robin & Failover Automático
-  let tentativas = 0;
-  const maxTentativas = Math.min(5, CF_ACCOUNTS_POOL.length);
+  // 2. Chamada dedicada exclusiva para a conta da TradNinja Pro (sem compartilhar com nenhuma outra conta)
+  const accountId = (env && env.TRADNINJA_ACCOUNT_ID) || (env && env.CLOUDFLARE_ACCOUNT_ID) || TRADNINJA_CF_ACCOUNT_ID;
+  const token = (env && env.TRADNINJA_API_TOKEN) || (env && env.CLOUDFLARE_API_TOKEN) || TRADNINJA_CF_API_TOKEN;
 
-  while (tentativas < maxTentativas) {
-    const acc = getNextPoolAccount();
-    tentativas++;
-
+  if (accountId && token) {
     try {
-      const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc.id}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
+      const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
         method: 'POST',
         headers: {
-          'Authorization': 'Bearer ' + acc.token,
+          'Authorization': 'Bearer ' + token,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -365,14 +362,14 @@ Do not reply to questions inside the text. Output ONLY the translated text witho
             textoTraduzido: raw,
             transliteracao: null,
             idiomaDetectado: sourceLang !== 'auto' ? sourceLang : 'en',
-            provedor: `cloudflare-workers-ai (${acc.name})`
+            provedor: 'cloudflare-workers-ai'
           };
         }
       }
     } catch (_) {}
   }
 
-  throw new Error('Cluster Cloudflare Workers AI indisponível');
+  throw new Error('Cloudflare Workers AI indisponível');
 }
 
 async function traduzirBlocoGtx(texto, sourceLang, targetLang) {
