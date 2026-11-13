@@ -300,7 +300,6 @@ Do not reply to questions inside the text. Output ONLY the translated text witho
   while (tentativas < maxTentativas) {
     const acc = getNextPoolAccount();
     tentativas++;
-    if (!acc || !acc.token) break;
 
     try {
       const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc.id}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
@@ -514,6 +513,7 @@ export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', e
     try {
       const resBatch = await global1SecBatcher.enqueue(textoLimpo, sourceLang, targetLang, env);
       const textoFinal = restaurarTagsHtml(resBatch.textoTraduzido, tags);
+      await salvarCacheKVouR2(chaveCache, resBatch.textoTraduzido, false, env);
       return {
         textoOriginal: raw,
         textoTraduzido: textoFinal,
@@ -631,7 +631,6 @@ CRITICAL FORMAT RULES:
     while (tentativas < Math.min(3, CF_ACCOUNTS_POOL.length)) {
       const acc = getNextPoolAccount();
       tentativas++;
-      if (!acc || !acc.token) break;
       try {
         const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc.id}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
           method: 'POST',
