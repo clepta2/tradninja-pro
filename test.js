@@ -93,7 +93,15 @@ const reqLote = new Request('https://api.test/api/translate', {
     para: 'en'
   })
 });
-const resLote = await worker.fetch(reqLote);
+const mockEnv = {
+  AI: {
+    run: async () => ({
+      translated_text: 'Olá',
+      response: '[0] Good morning\n[1] Good afternoon\n[2] Good night'
+    })
+  }
+};
+const resLote = await worker.fetch(reqLote, mockEnv);
 assert(resLote.status === 200, 'Lote processado com status 200');
 const bodyLote = await resLote.json();
 assert(bodyLote.totalProcessado === 3, 'Processou 3 frases em lote');

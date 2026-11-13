@@ -300,6 +300,7 @@ Do not reply to questions inside the text. Output ONLY the translated text witho
   while (tentativas < maxTentativas) {
     const acc = getNextPoolAccount();
     tentativas++;
+    if (!acc || !acc.token) break;
 
     try {
       const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc.id}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
@@ -388,6 +389,78 @@ async function traduzirFallback(texto, sourceLang, targetLang) {
   throw new Error('Fallback esgotado');
 }
 
+// ─── PERSISTÊNCIA EM CLOUDFLARE KV & R2 ───
+const localCacheMap = new Map();
+
+function gerarChaveHash(texto, de, para) {
+  let hash = 0;
+  const str = `${de}:${para}:${texto.trim()}`;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return `trad_${de}_${para}_${Math.abs(hash)}`;
+}
+
+export async function buscarCacheKVouR2(chave, isPagina = false, env = {}) {
+  // 1. Memória RAM local do Isolate / Node.js (<1ms)
+  if (localCacheMap.has(chave)) {
+    return { textoTraduzido: localCacheMap.get(chave), fonte: 'memory-ram-edge' };
+  }
+
+  // 2. Cloudflare KV para frases e blocos (<15ms)
+  if (env && env.TRADUCOES_KV && typeof env.TRADUCOES_KV.get === 'function') {
+    try {
+      const val = await env.TRADUCOES_KV.get(chave);
+      if (val) {
+        localCacheMap.set(chave, val);
+        return { textoTraduzido: val, fonte: 'cloudflare-kv' };
+      }
+    } catch (_) {}
+  }
+
+  // 3. Cloudflare R2 para páginas completas e documentos grandes (<30ms)
+  if (isPagina && env && env.TRADUCOES_R2 && typeof env.TRADUCOES_R2.get === 'function') {
+    try {
+      const obj = await env.TRADUCOES_R2.get(`pages/${chave}.html`);
+      if (obj) {
+        const val = await obj.text();
+        localCacheMap.set(chave, val);
+        return { textoTraduzido: val, fonte: 'cloudflare-r2' };
+      }
+    } catch (_) {}
+  }
+
+  return null;
+}
+
+export async function salvarCacheKVouR2(chave, textoTraduzido, isPagina = false, env = {}) {
+  if (!chave || !textoTraduzido) return;
+
+  // 1. Grava na memória RAM local
+  localCacheMap.set(chave, textoTraduzido);
+  if (localCacheMap.size > 20000) {
+    const firstKey = localCacheMap.keys().next().value;
+    localCacheMap.delete(firstKey);
+  }
+
+  // 2. Grava no Cloudflare KV (expira em 30 dias)
+  if (env && env.TRADUCOES_KV && typeof env.TRADUCOES_KV.put === 'function') {
+    try {
+      await env.TRADUCOES_KV.put(chave, textoTraduzido, { expirationTtl: 2592000 });
+    } catch (_) {}
+  }
+
+  // 3. Se for página completa, grava no Cloudflare R2
+  if (isPagina && env && env.TRADUCOES_R2 && typeof env.TRADUCOES_R2.put === 'function') {
+    try {
+      await env.TRADUCOES_R2.put(`pages/${chave}.html`, textoTraduzido, {
+        httpMetadata: { contentType: 'text/html; charset=utf-8' }
+      });
+    } catch (_) {}
+  }
+}
+
 export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', env = {} } = {}) {
   if (!texto || typeof texto !== 'string' || !texto.trim()) {
     return {
@@ -418,6 +491,23 @@ export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', e
   const { textoLimpo, tags } = isolarTagsHtml(raw);
 
   const isFullHtmlDocument = /<!DOCTYPE|<html|<body/i.test(raw);
+  const chaveCache = gerarChaveHash(textoLimpo, sourceLang, targetLang);
+
+  // 0. Consulta no Cloudflare KV e R2 (ou memória RAM de borda)
+  const cacheHit = await buscarCacheKVouR2(chaveCache, isFullHtmlDocument, env);
+  if (cacheHit) {
+    const textoFinal = restaurarTagsHtml(cacheHit.textoTraduzido, tags);
+    return {
+      textoOriginal: raw,
+      textoTraduzido: textoFinal,
+      idiomaOrigem: sourceLang !== 'auto' ? sourceLang : 'en',
+      idiomaOrigemNome: NOMES_IDIOMAS[sourceLang] || sourceLang,
+      idiomaDestino: targetLang,
+      idiomaDestinoNome: NOMES_IDIOMAS[targetLang] || targetLang,
+      provedor: cacheHit.fonte,
+      cached: true
+    };
+  }
 
   // Agrupador Global de 1 Segundo: Agrupa requisições de clientes no mesmo segundo em 1 ÚNICA chamada!
   if (!isFullHtmlDocument && textoLimpo.length <= 800) {
@@ -479,6 +569,9 @@ export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', e
 
   const textoTraduzidoFinal = restaurarTagsHtml(traduzidoLimpo, tags);
 
+  // Grava automaticamente no Cloudflare KV e R2 para as próximas consultas serem instantâneas (<10ms)
+  await salvarCacheKVouR2(chaveCache, traduzidoLimpo, isFullHtmlDocument, env);
+
   return {
     textoOriginal: raw,
     textoTraduzido: textoTraduzidoFinal,
@@ -511,10 +604,34 @@ CRITICAL FORMAT RULES:
       }
     ];
 
+    // 1. Binding nativo no Cloudflare Worker
+    if (env && env.AI && typeof env.AI.run === 'function') {
+      try {
+        const aiRes = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', { messages, temperature: 0.05, max_tokens: 1536 });
+        const raw = aiRes?.response || '';
+        const lines = raw.split('\n');
+        const parsedMap = {};
+        for (const line of lines) {
+          const m = line.match(/^\[(\d+)\]\s*(.*)$/);
+          if (m) parsedMap[parseInt(m[1], 10)] = m[2].trim();
+        }
+        if (Object.keys(parsedMap).length > 0) {
+          return listaTextos.map((t, idx) => ({
+            textoOriginal: t,
+            textoTraduzido: parsedMap[idx] || t,
+            idiomaOrigem: sourceLang,
+            idiomaDestino: targetLang,
+            provedor: 'cloudflare-workers-ai-batch'
+          }));
+        }
+      } catch (_) {}
+    }
+
     let tentativas = 0;
     while (tentativas < Math.min(3, CF_ACCOUNTS_POOL.length)) {
       const acc = getNextPoolAccount();
       tentativas++;
+      if (!acc || !acc.token) break;
       try {
         const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc.id}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
           method: 'POST',
