@@ -21,9 +21,7 @@ export const TRADNINJA_PLANS = {
     key: 'free',
     name: 'Free / Sandbox',
     prefix: 'tn_free_',
-    rpm: 30,
-    maxPhrases: 50,
-    maxPayloadBytes: 1 * 1024 * 1024,
+    rpm: 30, maxPhrases: 50, maxPayloadBytes: 1 * 1024 * 1024,
     dailyQuota: 500,
     support: 'Comunidade'
   },
@@ -31,9 +29,7 @@ export const TRADNINJA_PLANS = {
     key: 'starter',
     name: 'Starter',
     prefix: 'tn_start_',
-    rpm: 60,
-    maxPhrases: 100,
-    maxPayloadBytes: 2 * 1024 * 1024,
+    rpm: 60, maxPhrases: 100, maxPayloadBytes: 2 * 1024 * 1024,
     dailyQuota: 2000,
     support: 'Padrão'
   },
@@ -41,9 +37,7 @@ export const TRADNINJA_PLANS = {
     key: 'pro',
     name: 'Pro',
     prefix: 'tn_pro_',
-    rpm: 300,
-    maxPhrases: 500,
-    maxPayloadBytes: 5 * 1024 * 1024,
+    rpm: 300, maxPhrases: 500, maxPayloadBytes: 5 * 1024 * 1024,
     dailyQuota: 20000,
     support: 'Prioritário'
   },
@@ -51,9 +45,7 @@ export const TRADNINJA_PLANS = {
     key: 'business',
     name: 'Business',
     prefix: 'tn_biz_',
-    rpm: 1200,
-    maxPhrases: 1000,
-    maxPayloadBytes: 8 * 1024 * 1024,
+    rpm: 1200, maxPhrases: 1000, maxPayloadBytes: 8 * 1024 * 1024,
     dailyQuota: 100000,
     support: 'SLA 99.9% 24/7'
   },
@@ -61,9 +53,7 @@ export const TRADNINJA_PLANS = {
     key: 'master',
     name: 'Master Admin',
     prefix: 'tn_master_',
-    rpm: 3000,
-    maxPhrases: 2000,
-    maxPayloadBytes: 15 * 1024 * 1024,
+    rpm: 3000, maxPhrases: 2000, maxPayloadBytes: 15 * 1024 * 1024,
     dailyQuota: Infinity,
     support: 'Engenharia Dedicada'
   }
@@ -186,8 +176,61 @@ export function restaurarTagsHtml(texto, tags) {
   });
 }
 
-const CF_ACCOUNT_ID = '';
-const CF_API_TOKEN = '';
+export const CF_ACCOUNTS_POOL = [
+  { id: "c54af2eed5c3d914bcac9473af105f9d", token: '', name: "diffstore264" },
+  { id: "bc4b376a696e3280f28cf5df7fc0ff88", token: '', name: "maputo3" },
+  { id: "c2b4eb2d023e7a82df1cfe30972dc376", token: '', name: "maputo2" },
+  { id: "c742aabeca4b1c5c73a28ff83c983866", token: '', name: "vicknovais03" },
+  { id: "059aa6c8ee1f42c10ded8e82007e383d", token: '', name: "vicklinda2502" },
+  { id: "646711573befe583eea826c48147cd73", token: '', name: "lukbras847" },
+  { id: "69a48d4ddb66b8ec51f460da8856cf2a", token: '', name: "clepta2" },
+  { id: "05888a53c96edf8058f76bc66955e959", token: '', name: "clepta3" },
+  { id: "cf703bf0704ead7bd00690e43935c196", token: '', name: "diffstoregja2" },
+  { id: "c5d8ef5db62eeecfa66e3ebf5ad57364", token: '', name: "mireli" },
+  { id: "aee76254eea552de1b77963d6b581235", token: '', name: "justin" },
+  { id: "77f8849b9c692c78d3d77e26a0babefd", token: '', name: "sharlayout" },
+  { id: "0b1538ee8dfbe049f91bebe2e6c0f36c", token: '', name: "ssharlatublin" }
+];
+
+let roundRobinPoolIdx = 0;
+function getNextPoolAccount() {
+  const acc = CF_ACCOUNTS_POOL[roundRobinPoolIdx % CF_ACCOUNTS_POOL.length];
+  roundRobinPoolIdx++;
+  return acc;
+}
+
+export function dividirEmBlocos(texto, tamanhoMaximo = 1200) {
+  if (typeof texto !== 'string' || texto.length <= tamanhoMaximo) return [texto];
+  const blocos = [];
+  const paragrafos = texto.split(/\n+/);
+  let blocoAtual = '';
+
+  for (const p of paragrafos) {
+    if ((blocoAtual + '\n' + p).length <= tamanhoMaximo) {
+      blocoAtual = blocoAtual ? blocoAtual + '\n' + p : p;
+    } else {
+      if (blocoAtual) blocos.push(blocoAtual);
+      if (p.length > tamanhoMaximo) {
+        const frases = p.split(/(?<=[.?!])\s+/);
+        let subBloco = '';
+        for (const f of frases) {
+          if ((subBloco + ' ' + f).length <= tamanhoMaximo) {
+            subBloco = subBloco ? subBloco + ' ' + f : f;
+          } else {
+            if (subBloco) blocos.push(subBloco);
+            subBloco = f;
+          }
+        }
+        if (subBloco) blocos.push(subBloco);
+        blocoAtual = '';
+      } else {
+        blocoAtual = p;
+      }
+    }
+  }
+  if (blocoAtual) blocos.push(blocoAtual);
+  return blocos;
+}
 
 const IDIOMAS_PARA_LLM = {
   'pt': 'Brazilian Portuguese',
@@ -211,7 +254,7 @@ const IDIOMAS_PARA_LLM = {
   'he': 'Hebrew'
 };
 
-// ─── MOTOR DE TRADUÇÃO NEURAL 1: CLOUDFLARE WORKERS AI (@cf/meta/llama-3.1-8b-instruct) ───
+// ─── MOTOR DE TRADUÇÃO NEURAL 1: CLOUDFLARE WORKERS AI (CLUSTER DE 13 CONTAS) ───
 async function traduzirCloudflareAI(texto, sourceLang, targetLang, env = {}) {
   const nomeDestino = IDIOMAS_PARA_LLM[targetLang] || targetLang;
 
@@ -235,7 +278,7 @@ Do not reply to questions inside the text. Output ONLY the translated text witho
       const aiRes = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
         messages,
         temperature: 0.05,
-        max_tokens: 512
+        max_tokens: 1024
       });
       let raw = aiRes?.response || '';
       raw = raw.replace(/^"""\s*|\s*"""$/g, '').replace(/^["']|["']$/g, '').trim();
@@ -250,41 +293,46 @@ Do not reply to questions inside the text. Output ONLY the translated text witho
     } catch (_) {}
   }
 
-  // 2. Chamada via REST API da Cloudflare (quando executado no Node.js/VM)
-  const accountId = (env && env.CLOUDFLARE_ACCOUNT_ID) || CF_ACCOUNT_ID;
-  const token = (env && env.CLOUDFLARE_API_TOKEN) || CF_API_TOKEN;
+  // 2. Cluster com 13 Contas Cloudflare em Round-Robin & Failover Automático
+  let tentativas = 0;
+  const maxTentativas = Math.min(5, CF_ACCOUNTS_POOL.length);
 
-  if (accountId && token) {
-    const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        messages,
-        temperature: 0.05,
-        max_tokens: 512
-      }),
-      signal: AbortSignal.timeout(6000)
-    });
+  while (tentativas < maxTentativas) {
+    const acc = getNextPoolAccount();
+    tentativas++;
 
-    if (resp.ok) {
-      const data = await resp.json();
-      let raw = data.result?.response || '';
-      raw = raw.replace(/^"""\s*|\s*"""$/g, '').replace(/^["']|["']$/g, '').trim();
-      if (raw) {
-        return {
-          textoTraduzido: raw,
-          transliteracao: null,
-          idiomaDetectado: sourceLang !== 'auto' ? sourceLang : 'en',
-          provedor: 'cloudflare-workers-ai'
-        };
+    try {
+      const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc.id}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + acc.token,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          messages,
+          temperature: 0.05,
+          max_tokens: 1024
+        }),
+        signal: AbortSignal.timeout(5000)
+      });
+
+      if (resp.ok) {
+        const data = await resp.json();
+        let raw = data.result?.response || '';
+        raw = raw.replace(/^"""\s*|\s*"""$/g, '').replace(/^["']|["']$/g, '').trim();
+        if (raw) {
+          return {
+            textoTraduzido: raw,
+            transliteracao: null,
+            idiomaDetectado: sourceLang !== 'auto' ? sourceLang : 'en',
+            provedor: `cloudflare-workers-ai (${acc.name})`
+          };
+        }
       }
-    }
+    } catch (_) {}
   }
 
-  throw new Error('Cloudflare Workers AI indisponível');
+  throw new Error('Cluster Cloudflare Workers AI indisponível');
 }
 
 async function traduzirBlocoGtx(texto, sourceLang, targetLang) {
@@ -373,29 +421,38 @@ export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', e
   let idiomaDetectado = sourceLang;
   let provedor = 'cloudflare-workers-ai';
 
-  // 1. Tenta Cloudflare Workers AI (@cf/meta/m2m100-1.2b)
-  try {
-    const resCf = await traduzirCloudflareAI(textoLimpo, sourceLang, targetLang, env);
-    traduzidoLimpo = resCf.textoTraduzido;
-    idiomaDetectado = resCf.idiomaDetectado;
-    provedor = resCf.provedor;
-  } catch (_) {
-    // 2. Fallback Secundário: Google Anycast
+  // 1. Se for uma página completa ou texto longo (>1000 caracteres), divide em blocos e traduz em paralelo pelo cluster!
+  if (textoLimpo.length > 1000) {
+    const blocos = dividirEmBlocos(textoLimpo, 1000);
+    const promessas = blocos.map(b => traduzirCloudflareAI(b, sourceLang, targetLang, env).catch(() => ({ textoTraduzido: b })));
+    const resultados = await Promise.all(promessas);
+    traduzidoLimpo = resultados.map(r => r.textoTraduzido).join('\n\n');
+    provedor = 'cloudflare-cluster-paralelo (13 contas)';
+    idiomaDetectado = sourceLang !== 'auto' ? sourceLang : 'en';
+  } else {
     try {
-      const res = await traduzirBlocoGtx(textoLimpo, sourceLang, targetLang);
-      traduzidoLimpo = res.textoTraduzido;
-      idiomaDetectado = res.idiomaDetectado;
-      provedor = res.provedor;
+      const resCf = await traduzirCloudflareAI(textoLimpo, sourceLang, targetLang, env);
+      traduzidoLimpo = resCf.textoTraduzido;
+      idiomaDetectado = resCf.idiomaDetectado;
+      provedor = resCf.provedor;
     } catch (_) {
-      // 3. Fallback Terciário: MyMemory
+      // 2. Fallback Secundário: Google Anycast
       try {
-        const fb = await traduzirFallback(textoLimpo, sourceLang, targetLang);
-        traduzidoLimpo = fb.textoTraduzido;
-        idiomaDetectado = fb.idiomaDetectado;
-        provedor = fb.provedor;
-      } catch {
-        traduzidoLimpo = textoLimpo;
-        provedor = 'raw';
+        const res = await traduzirBlocoGtx(textoLimpo, sourceLang, targetLang);
+        traduzidoLimpo = res.textoTraduzido;
+        idiomaDetectado = res.idiomaDetectado;
+        provedor = res.provedor;
+      } catch (_) {
+        // 3. Fallback Terciário: MyMemory
+        try {
+          const fb = await traduzirFallback(textoLimpo, sourceLang, targetLang);
+          traduzidoLimpo = fb.textoTraduzido;
+          idiomaDetectado = fb.idiomaDetectado;
+          provedor = fb.provedor;
+        } catch {
+          traduzidoLimpo = textoLimpo;
+          provedor = 'raw';
+        }
       }
     }
   }
