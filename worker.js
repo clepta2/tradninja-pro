@@ -68,8 +68,8 @@ export const NOMES_IDIOMAS = {
   'de': 'Alemão',
   'it': 'Italiano',
   'ja': 'Japonês',
-  'zh-CN': 'Chinês (Simplificado)',
   'zh': 'Chinês (Simplificado)',
+  'zh-CN': 'Chinês (Simplificado)',
   'zh-TW': 'Chinês (Tradicional)',
   'ru': 'Russo',
   'ar': 'Árabe',
@@ -89,7 +89,30 @@ export const NOMES_IDIOMAS = {
   'hu': 'Húngaro',
   'da': 'Dinamarquês',
   'fi': 'Finlandês',
-  'no': 'Norueguês'
+  'no': 'Norueguês',
+  'th': 'Tailandês',
+  'bg': 'Búlgaro',
+  'hr': 'Croata',
+  'sk': 'Eslovaco',
+  'sl': 'Esloveno',
+  'lt': 'Lituano',
+  'lv': 'Letão',
+  'et': 'Estoniano',
+  'ms': 'Malaio',
+  'sw': 'Suaíli',
+  'tl': 'Tagalog / Filipino',
+  'fil': 'Filipino',
+  'fa': 'Persa (Farsi)',
+  'ur': 'Urdu',
+  'bn': 'Bengali',
+  'ta': 'Tâmil',
+  'te': 'Telugu',
+  'ca': 'Catalão',
+  'af': 'Africâner',
+  'is': 'Islandês',
+  'ga': 'Irlandês',
+  'la': 'Latim',
+  'eo': 'Esperanto'
 };
 
 // Rate limiter em memória por token ou IP
@@ -176,28 +199,9 @@ export function restaurarTagsHtml(texto, tags) {
   });
 }
 
-export const CF_ACCOUNTS_POOL = [
-  { id: "c54af2eed5c3d914bcac9473af105f9d", token: '', name: "diffstore264" },
-  { id: "bc4b376a696e3280f28cf5df7fc0ff88", token: '', name: "maputo3" },
-  { id: "c2b4eb2d023e7a82df1cfe30972dc376", token: '', name: "maputo2" },
-  { id: "c742aabeca4b1c5c73a28ff83c983866", token: '', name: "vicknovais03" },
-  { id: "059aa6c8ee1f42c10ded8e82007e383d", token: '', name: "vicklinda2502" },
-  { id: "646711573befe583eea826c48147cd73", token: '', name: "lukbras847" },
-  { id: "69a48d4ddb66b8ec51f460da8856cf2a", token: '', name: "clepta2" },
-  { id: "05888a53c96edf8058f76bc66955e959", token: '', name: "clepta3" },
-  { id: "cf703bf0704ead7bd00690e43935c196", token: '', name: "diffstoregja2" },
-  { id: "c5d8ef5db62eeecfa66e3ebf5ad57364", token: '', name: "mireli" },
-  { id: "aee76254eea552de1b77963d6b581235", token: '', name: "justin" },
-  { id: "77f8849b9c692c78d3d77e26a0babefd", token: '', name: "sharlayout" },
-  { id: "0b1538ee8dfbe049f91bebe2e6c0f36c", token: '', name: "ssharlatublin" }
-];
-
-let roundRobinPoolIdx = 0;
-function getNextPoolAccount() {
-  const acc = CF_ACCOUNTS_POOL[roundRobinPoolIdx % CF_ACCOUNTS_POOL.length];
-  roundRobinPoolIdx++;
-  return acc;
-}
+// Conta Cloudflare Exclusiva e Isolada da API TradNinja Pro (Zero compartilhamento)
+const TRADNINJA_CF_ACCOUNT_ID = 'c54af2eed5c3d914bcac9473af105f9d';
+const TRADNINJA_CF_API_TOKEN = '';
 
 export function dividirEmBlocos(texto, tamanhoMaximo = 1200) {
   if (typeof texto !== 'string' || texto.length <= tamanhoMaximo) return [texto];
@@ -663,14 +667,15 @@ CRITICAL FORMAT RULES:
       } catch (_) {}
     }
 
-    let tentativas = 0;
-    while (tentativas < Math.min(3, CF_ACCOUNTS_POOL.length)) {
-      const acc = getNextPoolAccount();
-      tentativas++;
+    // 2. Chamada REST usando exclusivamente a conta dedicada do TradNinja Pro
+    const accountId = (env && env.TRADNINJA_ACCOUNT_ID) || (env && env.CLOUDFLARE_ACCOUNT_ID) || TRADNINJA_CF_ACCOUNT_ID;
+    const token = (env && env.TRADNINJA_API_TOKEN) || (env && env.CLOUDFLARE_API_TOKEN) || TRADNINJA_CF_API_TOKEN;
+
+    if (accountId && token) {
       try {
-        const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${acc.id}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
+        const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
           method: 'POST',
-          headers: { 'Authorization': 'Bearer ' + acc.token, 'Content-Type': 'application/json' },
+          headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
           body: JSON.stringify({ messages, temperature: 0.05, max_tokens: 1536 }),
           signal: AbortSignal.timeout(6000)
         });
@@ -691,7 +696,7 @@ CRITICAL FORMAT RULES:
               textoTraduzido: parsedMap[idx] || t,
               idiomaOrigem: sourceLang,
               idiomaDestino: targetLang,
-              provedor: `cloudflare-workers-ai-batch (${acc.name})`
+              provedor: 'cloudflare-workers-ai-batch'
             }));
           }
         }
