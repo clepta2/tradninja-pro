@@ -417,6 +417,26 @@ export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', e
   // Isola tags HTML antes da tradução para conformidade W3C
   const { textoLimpo, tags } = isolarTagsHtml(raw);
 
+  const isFullHtmlDocument = /<!DOCTYPE|<html|<body/i.test(raw);
+
+  // Agrupador Global de 1 Segundo: Agrupa requisições de clientes no mesmo segundo em 1 ÚNICA chamada!
+  if (!isFullHtmlDocument && textoLimpo.length <= 800) {
+    try {
+      const resBatch = await global1SecBatcher.enqueue(textoLimpo, sourceLang, targetLang, env);
+      const textoFinal = restaurarTagsHtml(resBatch.textoTraduzido, tags);
+      return {
+        textoOriginal: raw,
+        textoTraduzido: textoFinal,
+        idiomaOrigem: resBatch.idiomaOrigem,
+        idiomaOrigemNome: NOMES_IDIOMAS[resBatch.idiomaOrigem] || resBatch.idiomaOrigem,
+        idiomaDestino: targetLang,
+        idiomaDestinoNome: NOMES_IDIOMAS[targetLang] || targetLang,
+        provedor: resBatch.provedor,
+        totalClientesNoMesmoSegundo: resBatch.totalLoteMesmoSegundo || 1
+      };
+    } catch (_) {}
+  }
+
   let traduzidoLimpo = '';
   let idiomaDetectado = sourceLang;
   let provedor = 'cloudflare-workers-ai';
@@ -530,6 +550,102 @@ CRITICAL FORMAT RULES:
   const promessas = listaTextos.map(t => traduzirTextoCompleto(String(t), { de: sourceLang, para: targetLang, env }));
   return await Promise.all(promessas);
 }
+
+class Global1SecBatcher {
+  constructor() {
+    this.pendingQueue = [];
+    this.timer = null;
+    this.totalTicks = 0;
+  }
+
+  enqueue(text, from, to, env = {}) {
+    return new Promise((resolve, reject) => {
+      this.pendingQueue.push({
+        text,
+        from: from || 'auto',
+        to: to || 'pt',
+        env,
+        resolve,
+        reject
+      });
+
+      if (!this.timer) {
+        this.timer = setTimeout(() => this.processTick(), 1000);
+      }
+    });
+  }
+
+  async processTick() {
+    this.timer = null;
+    const batch = this.pendingQueue;
+    this.pendingQueue = [];
+    if (!batch.length) return;
+
+    this.totalTicks++;
+
+    const porDestino = new Map();
+    for (const item of batch) {
+      const dest = item.to;
+      if (!porDestino.has(dest)) porDestino.set(dest, []);
+      porDestino.get(dest).push(item);
+    }
+
+    for (const [targetLang, items] of porDestino.entries()) {
+      const uniqueTexts = [...new Set(items.map(i => i.text))];
+
+      if (uniqueTexts.length === 1) {
+        try {
+          const res = await traduzirCloudflareAI(uniqueTexts[0], items[0].from, targetLang, items[0].env);
+          for (const it of items) {
+            it.resolve({
+              textoOriginal: it.text,
+              textoTraduzido: res.textoTraduzido,
+              idiomaOrigem: res.idiomaDetectado,
+              idiomaDestino: targetLang,
+              provedor: 'cloudflare-workers-ai (batch 1s)',
+              batch1s: true,
+              totalLoteMesmoSegundo: items.length
+            });
+          }
+        } catch (err) {
+          try {
+            const fb = await traduzirBlocoGtx(uniqueTexts[0], items[0].from, targetLang);
+            for (const it of items) it.resolve({ textoOriginal: it.text, textoTraduzido: fb.textoTraduzido, idiomaOrigem: fb.idiomaDetectado, idiomaDestino: targetLang, provedor: fb.provedor });
+          } catch (e2) {
+            for (const it of items) it.reject(e2);
+          }
+        }
+      } else {
+        try {
+          const batchRes = await traduzirLoteEmChamadaUnica(uniqueTexts, items[0].from, targetLang, items[0].env);
+          const mapResultados = new Map();
+          for (const r of batchRes) {
+            mapResultados.set(r.textoOriginal, r.textoTraduzido);
+          }
+          for (const it of items) {
+            it.resolve({
+              textoOriginal: it.text,
+              textoTraduzido: mapResultados.get(it.text) || it.text,
+              idiomaOrigem: it.from,
+              idiomaDestino: targetLang,
+              provedor: 'cloudflare-workers-ai (batch 1s)',
+              batch1s: true,
+              totalLoteMesmoSegundo: items.length
+            });
+          }
+        } catch (err) {
+          for (const it of items) {
+            traduzirCloudflareAI(it.text, it.from, targetLang, it.env)
+              .then(it.resolve)
+              .catch(it.reject);
+          }
+        }
+      }
+    }
+  }
+}
+
+export const global1SecBatcher = new Global1SecBatcher();
 
 export default {
   async fetch(request, env, ctx) {
