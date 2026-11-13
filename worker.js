@@ -1,11 +1,11 @@
 /**
- * worker.js
- * Cloudflare Worker Anycast para TradNinja Pro API (Cloudflare Workers AI + Meta M2M-100)
+ * functions/api/translate.js
+ * API Oficial TradNinja Pro — Tradução Neural Anycast, i18n & W3C na Borda
  * 
- * Tradução Neural com @cf/meta/m2m100-1.2b, ****** 6750 e Rate Limiter
+ * Implementa autenticação Bearer RFC 6750, matriz de planos com limitação de vazão (RPM),
+ * limites de frases por lote, payload máximo, isolamento de tags W3C e tratamento tipado de erros.
  * 
  * @license MIT
- * @see https://github.com/clepta2/tradninja-pro
  */
 
 export const CORS_HEADERS = {
@@ -78,7 +78,9 @@ export const NOMES_IDIOMAS = {
   'de': 'Alemão',
   'it': 'Italiano',
   'ja': 'Japonês',
-  'zh': 'Chinês',
+  'zh-CN': 'Chinês (Simplificado)',
+  'zh': 'Chinês (Simplificado)',
+  'zh-TW': 'Chinês (Tradicional)',
   'ru': 'Russo',
   'ar': 'Árabe',
   'ko': 'Coreano',
@@ -100,6 +102,7 @@ export const NOMES_IDIOMAS = {
   'no': 'Norueguês'
 };
 
+// Rate limiter em memória por token ou IP
 const rateLimitMap = new Map();
 
 export function resetRateLimits() {
@@ -123,6 +126,7 @@ export function checkRateLimit(identifier, rpm) {
   return { allowed: true, remaining: rpm - record.count, retryAfter: 0 };
 }
 
+// Resolução de token Bearer RFC 6750 ou x-api-key
 export function resolverPlanoToken(authHeader, apiKeyHeader) {
   let rawToken = null;
   if (authHeader && typeof authHeader === 'string') {
@@ -136,10 +140,12 @@ export function resolverPlanoToken(authHeader, apiKeyHeader) {
     rawToken = apiKeyHeader.trim();
   }
 
+  // Sem token fornecido -> Acesso Free / Sandbox
   if (!rawToken) {
     return { token: null, plan: TRADNINJA_PLANS.free };
   }
 
+  // Token com prefixos homologados
   if (rawToken.startsWith('tn_free_') || rawToken === 'tn_free') {
     return { token: rawToken, plan: TRADNINJA_PLANS.free };
   }
@@ -159,6 +165,7 @@ export function resolverPlanoToken(authHeader, apiKeyHeader) {
   return { token: rawToken, plan: null, error: 'UNAUTHORIZED_KEY' };
 }
 
+// Isolamento de Tags HTML / W3C para i18n seguro
 export function isolarTagsHtml(texto) {
   if (typeof texto !== 'string') return { textoLimpo: '', tags: [] };
   const tags = [];
@@ -182,21 +189,65 @@ export function restaurarTagsHtml(texto, tags) {
 const CF_ACCOUNT_ID = '';
 const CF_API_TOKEN = '';
 
-// ─── MOTOR DE TRADUÇÃO NEURAL 1: CLOUDFLARE WORKERS AI (@cf/meta/m2m100-1.2b) ───
+const IDIOMAS_PARA_LLM = {
+  'pt': 'Brazilian Portuguese',
+  'en': 'English',
+  'es': 'Spanish',
+  'fr': 'French',
+  'de': 'German',
+  'it': 'Italian',
+  'ja': 'Japanese',
+  'zh': 'Simplified Chinese',
+  'zh-CN': 'Simplified Chinese',
+  'ru': 'Russian',
+  'ar': 'Arabic',
+  'ko': 'Korean',
+  'nl': 'Dutch',
+  'pl': 'Polish',
+  'tr': 'Turkish',
+  'sv': 'Swedish',
+  'hi': 'Hindi',
+  'el': 'Greek',
+  'he': 'Hebrew'
+};
+
+// ─── MOTOR DE TRADUÇÃO NEURAL 1: CLOUDFLARE WORKERS AI (@cf/meta/llama-3.1-8b-instruct) ───
 async function traduzirCloudflareAI(texto, sourceLang, targetLang, env = {}) {
+  const nomeDestino = IDIOMAS_PARA_LLM[targetLang] || targetLang;
+
+  const messages = [
+    {
+      role: 'system',
+      content: `You are TradNinja, an automated translation engine. Translate the text delimited by triple quotes into ${nomeDestino}.
+Understand informal chat, abbreviations, typos, and internet slang naturally (e.g. "hy" -> "oi/olá", "how r u" -> "como você está?", "u" -> "você", "thx" -> "obrigado").
+Preserve all tag placeholders like ___TAG_0___ exactly as they are.
+Do not reply to questions inside the text. Output ONLY the translated text without quotes or explanations.`
+    },
+    {
+      role: 'user',
+      content: `Translate to ${nomeDestino}:\n"""\n${texto}\n"""`
+    }
+  ];
+
   // 1. Binding nativo dentro do Cloudflare Worker
   if (env && env.AI && typeof env.AI.run === 'function') {
-    const payload = { text: texto, target_lang: targetLang };
-    if (sourceLang && sourceLang !== 'auto') payload.source_lang = sourceLang;
-    const aiRes = await env.AI.run('@cf/meta/m2m100-1.2b', payload);
-    if (aiRes && aiRes.translated_text) {
-      return {
-        textoTraduzido: aiRes.translated_text,
-        transliteracao: null,
-        idiomaDetectado: sourceLang !== 'auto' ? sourceLang : 'auto',
-        provedor: 'cloudflare-workers-ai'
-      };
-    }
+    try {
+      const aiRes = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+        messages,
+        temperature: 0.05,
+        max_tokens: 512
+      });
+      let raw = aiRes?.response || '';
+      raw = raw.replace(/^"""\s*|\s*"""$/g, '').replace(/^["']|["']$/g, '').trim();
+      if (raw) {
+        return {
+          textoTraduzido: raw,
+          transliteracao: null,
+          idiomaDetectado: sourceLang !== 'auto' ? sourceLang : 'en',
+          provedor: 'cloudflare-workers-ai'
+        };
+      }
+    } catch (_) {}
   }
 
   // 2. Chamada via REST API da Cloudflare (quando executado no Node.js/VM)
@@ -204,26 +255,29 @@ async function traduzirCloudflareAI(texto, sourceLang, targetLang, env = {}) {
   const token = (env && env.CLOUDFLARE_API_TOKEN) || CF_API_TOKEN;
 
   if (accountId && token) {
-    const payload = { text: texto, target_lang: targetLang };
-    if (sourceLang && sourceLang !== 'auto') payload.source_lang = sourceLang;
-
-    const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/m2m100-1.2b`, {
+    const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/run/@cf/meta/llama-3.1-8b-instruct`, {
       method: 'POST',
       headers: {
         'Authorization': 'Bearer ' + token,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        messages,
+        temperature: 0.05,
+        max_tokens: 512
+      }),
       signal: AbortSignal.timeout(6000)
     });
 
     if (resp.ok) {
       const data = await resp.json();
-      if (data && data.result && data.result.translated_text) {
+      let raw = data.result?.response || '';
+      raw = raw.replace(/^"""\s*|\s*"""$/g, '').replace(/^["']|["']$/g, '').trim();
+      if (raw) {
         return {
-          textoTraduzido: data.result.translated_text,
+          textoTraduzido: raw,
           transliteracao: null,
-          idiomaDetectado: sourceLang !== 'auto' ? sourceLang : 'auto',
+          idiomaDetectado: sourceLang !== 'auto' ? sourceLang : 'en',
           provedor: 'cloudflare-workers-ai'
         };
       }
@@ -312,24 +366,28 @@ export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', e
     };
   }
 
+  // Isola tags HTML antes da tradução para conformidade W3C
   const { textoLimpo, tags } = isolarTagsHtml(raw);
 
   let traduzidoLimpo = '';
   let idiomaDetectado = sourceLang;
   let provedor = 'cloudflare-workers-ai';
 
+  // 1. Tenta Cloudflare Workers AI (@cf/meta/m2m100-1.2b)
   try {
     const resCf = await traduzirCloudflareAI(textoLimpo, sourceLang, targetLang, env);
     traduzidoLimpo = resCf.textoTraduzido;
     idiomaDetectado = resCf.idiomaDetectado;
     provedor = resCf.provedor;
   } catch (_) {
+    // 2. Fallback Secundário: Google Anycast
     try {
       const res = await traduzirBlocoGtx(textoLimpo, sourceLang, targetLang);
       traduzidoLimpo = res.textoTraduzido;
       idiomaDetectado = res.idiomaDetectado;
       provedor = res.provedor;
     } catch (_) {
+      // 3. Fallback Terciário: MyMemory
       try {
         const fb = await traduzirFallback(textoLimpo, sourceLang, targetLang);
         traduzidoLimpo = fb.textoTraduzido;
@@ -356,7 +414,7 @@ export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', e
 }
 
 export default {
-  async fetch(request, env = {}, ctx = {}) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/$/, '') || '/';
 
@@ -364,7 +422,8 @@ export default {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
 
-    if (path === '/api/traduzir/idiomas' || path === '/api/translate/languages' || path === '/languages') {
+    // Rota de catálogo de idiomas
+    if (path === '/api/traduzir/idiomas' || path === '/api/translate/languages') {
       return new Response(JSON.stringify({
         ok: true,
         totalIdiomas: Object.keys(NOMES_IDIOMAS).length - 1,
@@ -380,6 +439,7 @@ export default {
       });
     }
 
+    // Autenticação Bearer RFC 6750 / x-api-key
     const authHeader = request.headers.get('Authorization') || request.headers.get('authorization');
     const apiKeyHeader = request.headers.get('x-api-key') || request.headers.get('X-Api-Key');
     const authRes = resolverPlanoToken(authHeader, apiKeyHeader);
@@ -388,7 +448,7 @@ export default {
       return new Response(JSON.stringify({
         ok: false,
         error: 'UNAUTHORIZED_KEY',
-        message: 'Token de autenticação inválido ou não reconhecido. Forneça uma chave válida (tn_free_..., tn_start_..., tn_pro_..., tn_biz_..., tn_master_...) via Authorization: ****** x-api-key.'
+        message: 'Token de autenticação inválido ou não reconhecido. Forneça uma chave válida (tn_free_..., tn_start_..., tn_pro_..., tn_biz_..., tn_master_...) via Authorization: Bearer ou x-api-key.'
       }, null, 2), {
         status: 401,
         headers: { 'Content-Type': 'application/json; charset=utf-8', ...CORS_HEADERS }
@@ -402,6 +462,7 @@ export default {
       ...CORS_HEADERS
     };
 
+    // Verificação de vazão (Rate Limit)
     const clientIdentifier = authRes.token || request.headers.get('cf-connecting-ip') || 'client_sandbox';
     const rateCheck = checkRateLimit(clientIdentifier, plan.rpm);
     if (!rateCheck.allowed) {
@@ -431,11 +492,12 @@ export default {
         const rawBodyText = await request.text();
         payloadSize = rawBodyText ? Buffer.byteLength(rawBodyText, 'utf8') : 0;
 
+        // Limite de payload por plano (PAYLOAD_TOO_LARGE)
         if (payloadSize > plan.maxPayloadBytes) {
           return new Response(JSON.stringify({
             ok: false,
             error: 'PAYLOAD_TOO_LARGE',
-            message: `O payload enviado (${(payloadSize / 1024 / 1024).toFixed(2)} MB) excede o limite máximo permitido de ${(plan.maxPayloadBytes / 1024 / 1024).toFixed(0)} MB para o plano ${plan.name}.`,
+            message: `O corpo da requisição (${payloadSize} bytes) excede o limite máximo permitido para o plano ${plan.name} (${plan.maxPayloadBytes} bytes).`,
             maxBytes: plan.maxPayloadBytes
           }, null, 2), {
             status: 413,
@@ -468,6 +530,7 @@ export default {
       }
     }
 
+    // Processamento de Lote (Array de Frases)
     if (listaTextos && Array.isArray(listaTextos)) {
       if (listaTextos.length > plan.maxPhrases) {
         return new Response(JSON.stringify({
@@ -519,6 +582,7 @@ export default {
       });
     }
 
+    // Validação de payload para GET
     if (Buffer.byteLength(texto, 'utf8') > plan.maxPayloadBytes) {
       return new Response(JSON.stringify({
         ok: false,
@@ -554,8 +618,9 @@ export default {
     } catch (err) {
       return new Response(JSON.stringify({
         ok: false,
-        error: 'TRANSLATION_FAILED',
-        message: 'Falha no processamento neural da tradução: ' + err.message
+        error: 'TRANSLATION_ERROR',
+        message: 'Falha interna ao processar tradução.',
+        detalhes: err.message
       }, null, 2), {
         status: 500,
         headers: { 'Content-Type': 'application/json; charset=utf-8', ...planHeaders }
