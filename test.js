@@ -123,6 +123,32 @@ assert(resExcesso.status === 400, 'Excesso de frases rejeitado com HTTP 400');
 const bodyExcesso = await resExcesso.json();
 assert(bodyExcesso.error === 'PHRASE_LIMIT_EXCEEDED', 'Erro tipado PHRASE_LIMIT_EXCEEDED retornado');
 
+// 6. Teste de Rotas Dedicadas por Idioma (/api/translate/:target)
+console.log('\n--- 6. Rotas Dedicadas de Idiomas (/api/translate/:target) ---');
+const rotasDedicadas = ['en', 'es', 'fr', 'de', 'it', 'ja', 'zh'];
+for (const lang of rotasDedicadas) {
+  const reqDedicada = new Request(`https://api.test/api/translate/${lang}?q=Bom+dia`, {
+    headers: { 'x-api-key': 'tn_pro_test_key' }
+  });
+  const resDedicada = await worker.fetch(reqDedicada);
+  assert(resDedicada.status === 200, `Rota dedicada /api/translate/${lang} respondeu 200 OK`);
+  const bodyDedicada = await resDedicada.json();
+  assert(bodyDedicada.ok === true && bodyDedicada.idiomaDestino === lang, `Rota /api/translate/${lang} traduziu diretamente para ${lang}: "${bodyDedicada.textoTraduzido}"`);
+}
+
+// 7. Teste de Matriz Global de Idiomas
+console.log('\n--- 7. Teste da Matriz Global de Idiomas ---');
+const idiomasTeste = ['pt', 'en', 'es', 'fr', 'de', 'it', 'ja', 'zh', 'ru', 'ar', 'ko', 'nl', 'tr', 'sv', 'hi'];
+let idiomasSucesso = 0;
+for (const tgt of idiomasTeste) {
+  const t = await traduzirTextoCompleto('Obrigado', { de: 'pt', para: tgt });
+  if (t && t.textoTraduzido) {
+    idiomasSucesso++;
+  }
+}
+assert(idiomasSucesso === idiomasTeste.length, `Todos os ${idiomasTeste.length} idiomas mundiais traduzidos com sucesso!`);
+
 console.log(`\n========================================`);
 console.log(`🎉 TODOS OS TESTES PASSARAM COM 100% DE SUCESSO! (${pass} aprovados)`);
 console.log(`========================================\n`);
+

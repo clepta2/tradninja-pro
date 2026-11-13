@@ -159,7 +159,7 @@ export function resolverPlanoToken(authHeader, apiKeyHeader) {
   }
 
   // Token com prefixos homologados
-  if (rawToken.startsWith('tn_free_') || rawToken === 'tn_free') {
+  if (rawToken.startsWith('tn_free_') || rawToken === 'tn_free' || rawToken.startsWith('tn_test_') || rawToken === 'tn_test') {
     return { token: rawToken, plan: TRADNINJA_PLANS.free };
   }
   if (rawToken.startsWith('tn_start_') || rawToken === 'tn_start') {
@@ -200,8 +200,10 @@ export function restaurarTagsHtml(texto, tags) {
 }
 
 // Conta Cloudflare Exclusiva e Isolada da API TradNinja Pro (Zero compartilhamento)
-const TRADNINJA_CF_ACCOUNT_ID = 'c54af2eed5c3d914bcac9473af105f9d';
+const TRADNINJA_CF_ACCOUNT_ID = '162e1ecd957dc7db1dfbdab4c2bccd23';
 const TRADNINJA_CF_API_TOKEN = '';
+const TRADNINJA_KV_NAMESPACE_ID = '915b4d31e602455a81eeffb0e75902ab';
+const TRADNINJA_R2_BUCKET = 'tradninja-pages';
 
 export function dividirEmBlocos(texto, tamanhoMaximo = 1200) {
   if (typeof texto !== 'string' || texto.length <= tamanhoMaximo) return [texto];
@@ -294,7 +296,50 @@ const IDIOMAS_PARA_LLM = {
   'la': 'Latin'
 };
 
-// ─── MOTOR DE TRADUÇÃO NEURAL 1: CLOUDFLARE WORKERS AI (CLUSTER DE 13 CONTAS) ───
+// ─── MOTOR DE TRADUÇÃO NEURAL 0: GROQ AI (ULTRA-RÁPIDO SUB-200MS) ───
+async function traduzirGroqAI(texto, sourceLang, targetLang, env = {}) {
+  const apiKey = (env && env.GROQ_API_KEY) || (typeof process !== 'undefined' && process.env ? process.env.GROQ_API_KEY : null);
+  if (!apiKey) throw new Error('GROQ_API_KEY não configurada');
+  const nomeDestino = IDIOMAS_PARA_LLM[targetLang] || targetLang;
+
+  const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + apiKey,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'system',
+          content: `You are TradNinja, an automated translation engine. Translate the text into ${nomeDestino}. Preserve all placeholders like ___TAG_0___ exactly as they are. Output ONLY the translated text without commentary or quotes.`
+        },
+        {
+          role: 'user',
+          content: texto
+        }
+      ],
+      temperature: 0.05,
+      max_tokens: 1024
+    }),
+    signal: AbortSignal.timeout(3500)
+  });
+
+  if (!resp.ok) throw new Error(`Groq HTTP ${resp.status}`);
+  const data = await resp.json();
+  const raw = (data.choices?.[0]?.message?.content || '').replace(/^"""\s*|\s*"""$/g, '').replace(/^["']|["']$/g, '').trim();
+  if (!raw) throw new Error('Groq retornou resposta vazia');
+
+  return {
+    textoTraduzido: raw,
+    transliteracao: null,
+    idiomaDetectado: sourceLang !== 'auto' ? sourceLang : 'en',
+    provedor: 'groq-llama-3.3-70b'
+  };
+}
+
+// ─── MOTOR DE TRADUÇÃO NEURAL 1: CLOUDFLARE WORKERS AI (CONTA DEDICADA ISOLADA) ───
 async function traduzirCloudflareAI(texto, sourceLang, targetLang, env = {}) {
   const nomeDestino = IDIOMAS_PARA_LLM[targetLang] || targetLang;
 
@@ -372,6 +417,46 @@ Do not reply to questions inside the text. Output ONLY the translated text witho
   throw new Error('Cloudflare Workers AI indisponível');
 }
 
+// ─── MOTOR DE TRADUÇÃO NEURAL 2: OPENROUTER (MULTI-MODEL BACKUP) ───
+async function traduzirOpenRouter(texto, sourceLang, targetLang, env = {}) {
+  const apiKey = (env && env.OPENROUTER_API_KEY) || (typeof process !== 'undefined' && process.env ? process.env.OPENROUTER_API_KEY : null);
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY não configurada');
+  const nomeDestino = IDIOMAS_PARA_LLM[targetLang] || targetLang;
+
+  const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + apiKey,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'meta-llama/llama-3.1-8b-instruct',
+      messages: [
+        {
+          role: 'system',
+          content: `You are TradNinja translation engine. Translate text into ${nomeDestino}. Preserve placeholders like ___TAG_0___. Output ONLY translation.`
+        },
+        { role: 'user', content: texto }
+      ],
+      temperature: 0.05,
+      max_tokens: 1024
+    }),
+    signal: AbortSignal.timeout(4500)
+  });
+
+  if (!resp.ok) throw new Error(`OpenRouter HTTP ${resp.status}`);
+  const data = await resp.json();
+  const raw = (data.choices?.[0]?.message?.content || '').replace(/^"""\s*|\s*"""$/g, '').replace(/^["']|["']$/g, '').trim();
+  if (!raw) throw new Error('OpenRouter retornou resposta vazia');
+
+  return {
+    textoTraduzido: raw,
+    transliteracao: null,
+    idiomaDetectado: sourceLang !== 'auto' ? sourceLang : 'en',
+    provedor: 'openrouter-llama-8b'
+  };
+}
+
 async function traduzirBlocoGtx(texto, sourceLang, targetLang) {
   const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(sourceLang)}&tl=${encodeURIComponent(targetLang)}&dt=t&dt=at&dt=rm&dt=bd&dt=qca&q=${encodeURIComponent(texto)}`;
 
@@ -444,13 +529,34 @@ export async function buscarCacheKVouR2(chave, isPagina = false, env = {}) {
     return { textoTraduzido: localCacheMap.get(chave), fonte: 'memory-ram-edge' };
   }
 
-  // 2. Cloudflare KV para frases e blocos (<15ms)
+  // 2. Cloudflare KV nativo (<15ms)
   if (env && env.TRADUCOES_KV && typeof env.TRADUCOES_KV.get === 'function') {
     try {
       const val = await env.TRADUCOES_KV.get(chave);
       if (val) {
         localCacheMap.set(chave, val);
         return { textoTraduzido: val, fonte: 'cloudflare-kv' };
+      }
+    } catch (_) {}
+  }
+
+  // 2.1 Fallback REST para Cloudflare KV quando binding não estiver injetado
+  const accountId = (env && env.TRADNINJA_ACCOUNT_ID) || (env && env.CLOUDFLARE_ACCOUNT_ID) || TRADNINJA_CF_ACCOUNT_ID;
+  const token = (env && env.TRADNINJA_API_TOKEN) || (env && env.CLOUDFLARE_API_TOKEN) || TRADNINJA_CF_API_TOKEN;
+  const kvId = (env && env.TRADUCOES_KV_ID) || TRADNINJA_KV_NAMESPACE_ID;
+
+  if (accountId && token && kvId) {
+    try {
+      const resp = await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${kvId}/values/${encodeURIComponent(chave)}`, {
+        headers: { 'Authorization': 'Bearer ' + token },
+        signal: AbortSignal.timeout(1500)
+      });
+      if (resp.ok) {
+        const val = await resp.text();
+        if (val) {
+          localCacheMap.set(chave, val);
+          return { textoTraduzido: val, fonte: 'cloudflare-kv' };
+        }
       }
     } catch (_) {}
   }
@@ -480,10 +586,27 @@ export async function salvarCacheKVouR2(chave, textoTraduzido, isPagina = false,
     localCacheMap.delete(firstKey);
   }
 
-  // 2. Grava no Cloudflare KV (expira em 30 dias)
+  // 2. Grava no Cloudflare KV nativo (expira em 30 dias)
   if (env && env.TRADUCOES_KV && typeof env.TRADUCOES_KV.put === 'function') {
     try {
       await env.TRADUCOES_KV.put(chave, textoTraduzido, { expirationTtl: 2592000 });
+      return;
+    } catch (_) {}
+  }
+
+  // 2.1 Fallback REST para Cloudflare KV quando binding não estiver injetado
+  const accountId = (env && env.TRADNINJA_ACCOUNT_ID) || (env && env.CLOUDFLARE_ACCOUNT_ID) || TRADNINJA_CF_ACCOUNT_ID;
+  const token = (env && env.TRADNINJA_API_TOKEN) || (env && env.CLOUDFLARE_API_TOKEN) || TRADNINJA_CF_API_TOKEN;
+  const kvId = (env && env.TRADUCOES_KV_ID) || TRADNINJA_KV_NAMESPACE_ID;
+
+  if (accountId && token && kvId) {
+    try {
+      await fetch(`https://api.cloudflare.com/client/v4/accounts/${accountId}/storage/kv/namespaces/${kvId}/values/${encodeURIComponent(chave)}?expiration_ttl=2592000`, {
+        method: 'PUT',
+        headers: { 'Authorization': 'Bearer ' + token },
+        body: textoTraduzido,
+        signal: AbortSignal.timeout(2000)
+      });
     } catch (_) {}
   }
 
@@ -577,29 +700,67 @@ export async function traduzirTextoCompleto(texto, { de = 'auto', para = 'pt', e
     provedor = 'cloudflare-cluster-paralelo (13 contas)';
     idiomaDetectado = sourceLang !== 'auto' ? sourceLang : 'en';
   } else {
+    // Pipeline Multi-Provedor Inteligente:
+    // 1. Groq AI (se chave configurada no env -> ~200ms)
+    // 2. Cloudflare Workers AI (Conta Dedicada Anycast -> ~600ms)
+    // 3. OpenRouter (se chave configurada -> ~800ms)
+    // 4. Google Anycast Neural Engine (GTX -> ~150ms)
+    // 5. MyMemory Fallback
+    let sucesso = false;
+
+    // Tentativa 1: Groq AI
     try {
-      const resCf = await traduzirCloudflareAI(textoLimpo, sourceLang, targetLang, env);
-      traduzidoLimpo = resCf.textoTraduzido;
-      idiomaDetectado = resCf.idiomaDetectado;
-      provedor = resCf.provedor;
-    } catch (_) {
-      // 2. Fallback Secundário: Google Anycast
+      const resGroq = await traduzirGroqAI(textoLimpo, sourceLang, targetLang, env);
+      traduzidoLimpo = resGroq.textoTraduzido;
+      idiomaDetectado = resGroq.idiomaDetectado;
+      provedor = resGroq.provedor;
+      sucesso = true;
+    } catch (_) {}
+
+    // Tentativa 2: Cloudflare Workers AI (Conta Oficial Isolada)
+    if (!sucesso) {
       try {
-        const res = await traduzirBlocoGtx(textoLimpo, sourceLang, targetLang);
-        traduzidoLimpo = res.textoTraduzido;
-        idiomaDetectado = res.idiomaDetectado;
-        provedor = res.provedor;
+        const resCf = await traduzirCloudflareAI(textoLimpo, sourceLang, targetLang, env);
+        traduzidoLimpo = resCf.textoTraduzido;
+        idiomaDetectado = resCf.idiomaDetectado;
+        provedor = resCf.provedor;
+        sucesso = true;
+      } catch (_) {}
+    }
+
+    // Tentativa 3: OpenRouter
+    if (!sucesso) {
+      try {
+        const resOr = await traduzirOpenRouter(textoLimpo, sourceLang, targetLang, env);
+        traduzidoLimpo = resOr.textoTraduzido;
+        idiomaDetectado = resOr.idiomaDetectado;
+        provedor = resOr.provedor;
+        sucesso = true;
+      } catch (_) {}
+    }
+
+    // Tentativa 4: Google Anycast Neural Engine
+    if (!sucesso) {
+      try {
+        const resGtx = await traduzirBlocoGtx(textoLimpo, sourceLang, targetLang);
+        traduzidoLimpo = resGtx.textoTraduzido;
+        idiomaDetectado = resGtx.idiomaDetectado;
+        provedor = resGtx.provedor;
+        sucesso = true;
+      } catch (_) {}
+    }
+
+    // Tentativa 5: MyMemory Fallback
+    if (!sucesso) {
+      try {
+        const fb = await traduzirFallback(textoLimpo, sourceLang, targetLang);
+        traduzidoLimpo = fb.textoTraduzido;
+        idiomaDetectado = fb.idiomaDetectado;
+        provedor = fb.provedor;
+        sucesso = true;
       } catch (_) {
-        // 3. Fallback Terciário: MyMemory
-        try {
-          const fb = await traduzirFallback(textoLimpo, sourceLang, targetLang);
-          traduzidoLimpo = fb.textoTraduzido;
-          idiomaDetectado = fb.idiomaDetectado;
-          provedor = fb.provedor;
-        } catch {
-          traduzidoLimpo = textoLimpo;
-          provedor = 'raw';
-        }
+        traduzidoLimpo = textoLimpo;
+        provedor = 'raw';
       }
     }
   }
@@ -869,9 +1030,20 @@ export default {
       });
     }
 
+    // Rota dedicada por idioma: /api/translate/:target ou /api/traduzir/:target
+    // Exemplos: /api/translate/en, /api/translate/pt, /api/translate/es, /api/translate/fr, /api/translate/de, etc.
+    let rotaIdiomaDestino = null;
+    const matchRota = path.match(/^\/api\/(?:translate|traduzir)\/([a-zA-Z-]+)$/);
+    if (matchRota && matchRota[1]) {
+      const code = matchRota[1].toLowerCase();
+      if (NOMES_IDIOMAS[code] || NOMES_IDIOMAS[matchRota[1]]) {
+        rotaIdiomaDestino = code;
+      }
+    }
+
     let texto = url.searchParams.get('texto') || url.searchParams.get('q') || url.searchParams.get('text') || '';
     let de = url.searchParams.get('de') || url.searchParams.get('sl') || url.searchParams.get('from') || 'auto';
-    let para = url.searchParams.get('para') || url.searchParams.get('tl') || url.searchParams.get('to') || 'pt';
+    let para = rotaIdiomaDestino || url.searchParams.get('para') || url.searchParams.get('tl') || url.searchParams.get('to') || 'pt';
     let listaTextos = null;
     let payloadSize = 0;
 

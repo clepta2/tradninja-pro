@@ -2,6 +2,7 @@ name = "tradninja-pro-api"
 main = "worker.js"
 compatibility_date = "2026-10-01"
 workers_dev = true
+account_id = "162e1ecd957dc7db1dfbdab4c2bccd23"
 
 [observability]
 enabled = true
@@ -9,10 +10,19 @@ enabled = true
 [ai]
 binding = "AI"
 
+[[kv_namespaces]]
+binding = "TRADUCOES_KV"
+id = "915b4d31e602455a81eeffb0e75902ab"
+
+[[r2_buckets]]
+binding = "TRADUCOES_R2"
+bucket_name = "tradninja-pages"
+
 [vars]
 SERVICE_NAME = "TradNinja Pro API"
 ENVIRONMENT = "production"
 GITHUB_REPO = "clepta2/tradninja-pro"
 DOCS_URL = "https://github.com/clepta2/tradninja-pro"
-API_VERSION = "1.0.0"
-MODEL_NAME = "@cf/meta/m2m100-1.2b"
+API_VERSION = "1.1.0"
+MODEL_NAME = "@cf/meta/llama-3.1-8b-instruct"
+TRADNINJA_ACCOUNT_ID = "162e1ecd957dc7db1dfbdab4c2bccd23"
