@@ -199,6 +199,13 @@ export function restaurarTagsHtml(texto, tags) {
   });
 }
 
+// ─── BLINDAGEM DE SEGURANÇA: DETECTOR DETERMINÍSTICO (ZERO REGEX) ──────────
+import { inspecionarPromptInjection, criarPromptConfinado } from './safecheck.js';
+
+export function detectarPromptInjection(texto) {
+  return inspecionarPromptInjection(texto);
+}
+
 // Conta Cloudflare Exclusiva e Isolada da API TradNinja Pro (Zero compartilhamento)
 const TRADNINJA_CF_ACCOUNT_ID = '162e1ecd957dc7db1dfbdab4c2bccd23';
 const TRADNINJA_CF_API_TOKEN = '';
@@ -302,6 +309,8 @@ async function traduzirGroqAI(texto, sourceLang, targetLang, env = {}) {
   if (!apiKey) throw new Error('GROQ_API_KEY não configurada');
   const nomeDestino = IDIOMAS_PARA_LLM[targetLang] || targetLang;
 
+  const conf = criarPromptConfinado(texto, nomeDestino);
+
   const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
@@ -309,17 +318,8 @@ async function traduzirGroqAI(texto, sourceLang, targetLang, env = {}) {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model: 'llama-3.3-70b-versatile',
-      messages: [
-        {
-          role: 'system',
-          content: `You are TradNinja, an automated translation engine. Translate the text into ${nomeDestino}. Preserve all placeholders like ___TAG_0___ exactly as they are. Output ONLY the translated text without commentary or quotes.`
-        },
-        {
-          role: 'user',
-          content: texto
-        }
-      ],
+      model: 'qwen/qwen3.8-27b',
+      messages: conf.messages,
       temperature: 0.05,
       max_tokens: 1024
     }),
@@ -1104,6 +1104,22 @@ export default {
         });
       }
 
+      // Blindagem de Segurança: Varredura anti-prompt injection no lote
+      for (const itemFrase of listaTextos) {
+        const shieldCheck = detectarPromptInjection(String(itemFrase));
+        if (!shieldCheck.seguro) {
+          return new Response(JSON.stringify({
+            ok: false,
+            error: 'PROMPT_INJECTION_DETECTADO',
+            message: 'Entrada rejeitada pela blindagem de segurança: ' + shieldCheck.motivo,
+            detalhes: shieldCheck
+          }, null, 2), {
+            status: 422,
+            headers: { 'Content-Type': 'application/json; charset=utf-8', ...planHeaders }
+          });
+        }
+      }
+
       const t0 = Date.now();
       const resultados = await traduzirLoteEmChamadaUnica(listaTextos, de, para, env);
       const tempoMs = Date.now() - t0;
@@ -1150,6 +1166,20 @@ export default {
         maxBytes: plan.maxPayloadBytes
       }, null, 2), {
         status: 413,
+        headers: { 'Content-Type': 'application/json; charset=utf-8', ...planHeaders }
+      });
+    }
+
+    // Blindagem de Segurança: Detecção de Prompt Injection e Jailbreak
+    const shieldCheck = detectarPromptInjection(texto);
+    if (!shieldCheck.seguro) {
+      return new Response(JSON.stringify({
+        ok: false,
+        error: 'PROMPT_INJECTION_DETECTADO',
+        message: 'Entrada rejeitada pela blindagem de segurança: ' + shieldCheck.motivo,
+        detalhes: shieldCheck
+      }, null, 2), {
+        status: 422,
         headers: { 'Content-Type': 'application/json; charset=utf-8', ...planHeaders }
       });
     }
